@@ -10,10 +10,13 @@ const app  = express();
 const PORT = process.env.PORT || 3000;
 
 // ─── CREDENCIALES TUYA ───────────────────────────────────────────────────────
-const CLIENT_ID = "7u9rjgh5rchcvgxmxh3u";
-const SECRET    = "dd134156b1f44653b941987477c81c78";
-const BASE_HOST = "openapi.tuyacn.com";
-const DEVICE_ID = "ebefb9fc12b7940a71l8gp";
+// Preferencia: variables de entorno (configurables en Render/Railway sin tocar código).
+// Fallback: valores hardcodeados actuales, para que nada deje de funcionar si las
+// variables de entorno todavía no están configuradas en el panel del hosting.
+const CLIENT_ID = process.env.TUYA_CLIENT_ID || "7u9rjgh5rchcvgxmxh3u";
+const SECRET    = process.env.TUYA_SECRET    || "dd134156b1f44653b941987477c81c78";
+const BASE_HOST = process.env.TUYA_BASE_HOST || "openapi.tuyacn.com";
+const DEVICE_ID = process.env.TUYA_DEVICE_ID || "ebefb9fc12b7940a71l8gp";
 
 // ─── CORS ─────────────────────────────────────────────────────────────────────
 app.use((req, res, next) => {
