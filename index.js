@@ -5,10 +5,10 @@ const https   = require("https");
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
-const CLIENT_ID = "7u9rjgh5rchcvgxmxh3u";
-const SECRET    = "dd134156b1f44653b941987477c81c78";
-const BASE_HOST = "openapi.tuyacn.com";
-const DEVICE_ID = "ebefb9fc12b7940a71l8gp";
+const CLIENT_ID = process.env.TUYA_CLIENT_ID || "sg93tyvy53ds8tvs8cx4";
+const SECRET    = process.env.TUYA_CLIENT_SECRET || "4b35f017cc554d689b846a7725666be3";
+const BASE_HOST = process.env.TUYA_BASE_HOST || "openapi.tuyaus.com";
+const DEVICE_ID = process.env.TUYA_DEVICE_ID || "ebefb9fc12b7940a71l8gp";
 
 app.use((req, res, next) => {
   res.set("Access-Control-Allow-Origin", "*");
