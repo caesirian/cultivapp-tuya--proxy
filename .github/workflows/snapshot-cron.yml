@@ -1,0 +1,14 @@
+name: Snapshot CultivApp cada 15 min
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Llamar endpoint de snapshot
+        run: |
+          curl -sS -f "https://cultivapp-tuya-proxy.onrender.com/tuya/snapshot?key=${{ secrets.SNAPSHOT_SECRET }}"
