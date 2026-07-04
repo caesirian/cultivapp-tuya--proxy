@@ -109,7 +109,14 @@ const MAP = {
   countdown_1:"apagadoProgramadoSeg",
 };
 
+let tokenCache = { accessToken: null, expiraEn: 0 };
+
 async function getToken() {
+  // Reusar token vigente (con 60s de margen) en vez de pedir uno nuevo en cada llamada.
+  if (tokenCache.accessToken && Date.now() < tokenCache.expiraEn - 60000) {
+    return tokenCache.accessToken;
+  }
+
   const t1    = Date.now().toString();
   const n1    = crypto.randomBytes(8).toString("hex");
   const path1 = "/v1.0/token?grant_type=1";
@@ -124,7 +131,11 @@ async function getToken() {
   });
 
   if (!tok.success) throw Object.assign(new Error("Token error"), { detail: tok });
-  return tok.result.access_token;
+  tokenCache = {
+    accessToken: tok.result.access_token,
+    expiraEn: Date.now() + (tok.result.expire_time || 7200) * 1000,
+  };
+  return tokenCache.accessToken;
 }
 
 async function getDeviceStatus(deviceId, accessToken) {
