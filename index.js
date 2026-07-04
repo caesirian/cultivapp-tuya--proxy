@@ -205,7 +205,7 @@ const SENSORES_CULTIVO = Object.keys(LUGAR_POR_SENSOR);
 // Construye path+query con params ordenados alfabéticamente (requisito de firma Tuya)
 function buildQueryPath(basePath, params) {
   const keys = Object.keys(params).sort();
-  const query = keys.map(k => `${k}=${encodeURIComponent(params[k])}`).join("&");
+  const query = keys.map(k => `${k}=${params[k]}`).join("&");
   return query ? `${basePath}?${query}` : basePath;
 }
 
