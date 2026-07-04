@@ -278,17 +278,28 @@ function buildStats(logs) {
 app.get("/tuya/history", async (req, res) => {
   const alias    = req.query.device || "sensor_carpa";
   const deviceId = DEVICES[alias] || alias;
-  const range    = req.query.range === "7d" ? "7d" : "24h";
   const codes    = req.query.codes || DEFAULT_HISTORY_CODES[alias] || "va_temperature,va_humidity";
+  const fecha    = req.query.fecha; // "YYYY-MM-DD", opcional: día puntual en huso Argentina (UTC-3)
 
-  const endTime   = Date.now();
-  const startTime = endTime - (range === "7d" ? 7 : 1) * 24 * 60 * 60 * 1000;
+  let startTime, endTime, range;
+  if (fecha && /^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
+    // Medianoche a medianoche en Argentina (UTC-3), sin depender del huso del server
+    startTime = new Date(`${fecha}T00:00:00-03:00`).getTime();
+    endTime   = startTime + 24 * 60 * 60 * 1000;
+    if (Number.isNaN(startTime)) return res.status(400).json({ error: "Fecha inválida" });
+    endTime = Math.min(endTime, Date.now()); // no pedir a futuro
+    range = "dia";
+  } else {
+    range     = req.query.range === "7d" ? "7d" : "24h";
+    endTime   = Date.now();
+    startTime = endTime - (range === "7d" ? 7 : 1) * 24 * 60 * 60 * 1000;
+  }
 
   try {
     const accessToken = await getToken();
     const logs = await getRawHistory(deviceId, codes, startTime, endTime, accessToken);
     const estadisticas = buildStats(logs);
-    res.json({ ok: true, device: alias, deviceId, range, desde: startTime, hasta: endTime, estadisticas });
+    res.json({ ok: true, device: alias, deviceId, range, fecha: fecha||null, desde: startTime, hasta: endTime, estadisticas });
   } catch (err) {
     console.error("Error:", err.message);
     res.status(500).json({ error: err.message, detail: err.detail });
