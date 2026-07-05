@@ -166,7 +166,7 @@ async function getToken() {
 async function getDeviceStatus(deviceId, accessToken) {
   const t2    = Date.now().toString();
   const n2    = crypto.randomBytes(8).toString("hex");
-  const path2 = `/v1.0/devices/${deviceId}/status`;
+  const path2 = `/v1.0/devices/${deviceId}`; // detalle del dispositivo: trae "online" + "status" juntos
   const sig2  = buildSign(CLIENT_ID, SECRET, t2, n2, accessToken, "GET", path2);
 
   const dev = await httpsGet(path2, {
@@ -180,8 +180,10 @@ async function getDeviceStatus(deviceId, accessToken) {
 
   if (!dev.success) throw Object.assign(new Error("Device error"), { detail: dev });
 
+  const online     = !!dev.result.online;
+  const statusList = dev.result.status || [];
   const sensores = {};
-  dev.result.forEach(item => {
+  statusList.forEach(item => {
     let v = item.value;
     if (TEMP_CODES.has(item.code) && typeof v === "number") v = v / 10;
     if (VOLT_CURR_CODES.has(item.code) && typeof v === "number") v = v / 10;
@@ -190,7 +192,7 @@ async function getDeviceStatus(deviceId, accessToken) {
     sensores["_" + item.code] = item.value;
   });
 
-  return { sensores, raw: dev.result };
+  return { sensores, raw: statusList, online };
 }
 
 // Un solo dispositivo: /tuya?device=luz_carpa  (o un ID crudo)
@@ -199,8 +201,8 @@ app.get("/tuya", async (req, res) => {
   const deviceId = alias ? (DEVICES[alias] || alias) : DEVICE_ID;
   try {
     const accessToken = await getToken();
-    const { sensores, raw } = await getDeviceStatus(deviceId, accessToken);
-    res.json({ ok: true, sensores, raw });
+    const { sensores, raw, online } = await getDeviceStatus(deviceId, accessToken);
+    res.json({ ok: true, online, sensores, raw });
   } catch(err) {
     console.error("Error:", err.message);
     res.status(500).json({ error: err.message, detail: err.detail });
@@ -215,8 +217,8 @@ app.get("/tuya/all", async (req, res) => {
     const nombres = Object.keys(DEVICES);
     const resultados = await Promise.all(nombres.map(async (nombre) => {
       try {
-        const { sensores, raw } = await getDeviceStatus(DEVICES[nombre], accessToken);
-        return [nombre, { ok: true, id: DEVICES[nombre], sensores, raw }];
+        const { sensores, raw, online } = await getDeviceStatus(DEVICES[nombre], accessToken);
+        return [nombre, { ok: true, id: DEVICES[nombre], online, sensores, raw }];
       } catch (err) {
         return [nombre, { ok: false, id: DEVICES[nombre], error: err.message, detail: err.detail }];
       }
@@ -250,6 +252,7 @@ function buildQueryPath(basePath, params) {
 async function getRawHistory(deviceId, codes, startTime, endTime, accessToken, maxPages = 8) {
   let logs = [];
   let lastRowKey = "";
+  let truncado = false;
   for (let page = 0; page < maxPages; page++) {
     const params = { codes, end_time: String(endTime), size: "100", start_time: String(startTime) };
     if (lastRowKey) params.last_row_key = lastRowKey;
@@ -271,7 +274,9 @@ async function getRawHistory(deviceId, codes, startTime, endTime, accessToken, m
     logs = logs.concat(resp.result.logs || []);
     if (!resp.result.has_more) break;
     lastRowKey = resp.result.last_row_key;
+    if (page === maxPages - 1) truncado = true; // se llegó al límite de páginas y Tuya todavía tenía más datos
   }
+  logs.truncado = truncado; // propiedad extra sobre el array, no afecta su uso normal
   return logs;
 }
 
@@ -335,7 +340,7 @@ app.get("/tuya/history", async (req, res) => {
     const accessToken = await getToken();
     const logs = await getRawHistory(deviceId, codes, startTime, endTime, accessToken);
     const estadisticas = buildStats(logs);
-    res.json({ ok: true, device: alias, deviceId, range, fecha: fecha||null, desde: startTime, hasta: endTime, estadisticas });
+    res.json({ ok: true, device: alias, deviceId, range, fecha: fecha||null, desde: startTime, hasta: endTime, truncado: !!logs.truncado, estadisticas });
   } catch (err) {
     console.error("Error:", err.message);
     res.status(500).json({ error: err.message, detail: err.detail });
@@ -355,12 +360,14 @@ app.get("/tuya/history/resumen", async (req, res) => {
       getRawHistory(deviceId, codes, now - 24 * 60 * 60 * 1000, now, accessToken),
       getRawHistory(deviceId, codes, now - 7 * 24 * 60 * 60 * 1000, now, accessToken),
     ]);
-    const { sensores: actual } = await getDeviceStatus(deviceId, accessToken);
+    const { sensores: actual, online } = await getDeviceStatus(deviceId, accessToken);
     res.json({
       ok: true,
       device: alias,
       deviceId,
+      online,
       actual,
+      truncado: { "24h": !!logs24h.truncado, "7d": !!logs7d.truncado },
       historico: {
         "24h": buildStats(logs24h),
         "7d":  buildStats(logs7d),
@@ -384,7 +391,7 @@ app.get("/tuya/cultivo/resumen", async (req, res) => {
       const codes = DEFAULT_HISTORY_CODES[alias];
       const lugar = LUGAR_POR_SENSOR[alias];
       try {
-        const [{ sensores: actual }, logs24h, logs7d] = await Promise.all([
+        const [{ sensores: actual, online }, logs24h, logs7d] = await Promise.all([
           getDeviceStatus(deviceId, accessToken),
           getRawHistory(deviceId, codes, now - 24 * 60 * 60 * 1000, now, accessToken),
           getRawHistory(deviceId, codes, now - 7 * 24 * 60 * 60 * 1000, now, accessToken),
@@ -392,6 +399,7 @@ app.get("/tuya/cultivo/resumen", async (req, res) => {
         porLugar[lugar] = {
           ok: true,
           sensor: alias,
+          online,
           actual,
           historico: { "24h": buildStats(logs24h), "7d": buildStats(logs7d) },
         };
@@ -453,10 +461,10 @@ async function snapshotYGuardar() {
 
   const resultados = await Promise.all(nombres.map(async (nombre) => {
     try {
-      const { sensores } = await getDeviceStatus(DEVICES[nombre], accessToken);
+      const { sensores, online } = await getDeviceStatus(DEVICES[nombre], accessToken);
       await db.collection("lecturasSensores").doc(nombre)
         .collection("lecturas").doc(String(ts))
-        .set({ ts, sensores });
+        .set({ ts, online, sensores });
       return [nombre, { ok: true }];
     } catch (err) {
       // Dispositivo offline u otro error puntual: no rompe el snapshot de los demás
