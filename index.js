@@ -437,6 +437,9 @@ app.get("/tuya/devices", (req, res) => {
 // Intenta con el código "switch" primero; si Tuya lo rechaza, reintenta con "switch_1"
 // (distintos modelos de enchufe/interruptor usan uno u otro).
 app.post("/tuya/switch", async (req, res) => {
+  if (!SNAPSHOT_SECRET || req.body?.key !== SNAPSHOT_SECRET) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
   const { device, on } = req.body || {};
   if (!device || typeof on !== "boolean") {
     return res.status(400).json({ error: "Body inválido, se espera { device, on: true|false }" });
