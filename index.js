@@ -57,6 +57,16 @@ if (process.env.TUYA_DEVICES_JSON) {
 // Dispositivos que son "lugares de cultivo" (para /tuya/snapshot y /tuya/history/resumen por defecto)
 const DEVICES_CULTIVO = ["sensor_carpa", "luces_carpa", "turbinas_carpa", "sensor_3x1", "luces_3x1"];
 
+// Metadata para exponer un catálogo completo en /tuya/devices (fuente única de verdad,
+// el frontend la consume en vez de tener su propia copia hardcodeada de esto).
+const DEVICE_META = {
+  sensor_carpa:   { tipo: "sensor", nombre: "Sensor Carpa",   lugar: "Carpa" },
+  luces_carpa:    { tipo: "switch", nombre: "Luces Carpa",    lugar: "Carpa" },
+  turbinas_carpa: { tipo: "switch", nombre: "Turbinas Carpa", lugar: "Carpa" },
+  sensor_3x1:     { tipo: "sensor", nombre: "Sensor 3x1",     lugar: "Estructura 3x1" },
+  luces_3x1:      { tipo: "switch", nombre: "Luces 3x1",      lugar: "Estructura 3x1" },
+};
+
 app.use((req, res, next) => {
   res.set("Access-Control-Allow-Origin", "*");
   res.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -415,7 +425,13 @@ app.get("/tuya/cultivo/resumen", async (req, res) => {
 });
 
 // Lista de dispositivos conocidos (nombre corto -> id)
-app.get("/tuya/devices", (req, res) => res.json({ ok: true, devices: DEVICES }));
+app.get("/tuya/devices", (req, res) => {
+  const devices = {};
+  Object.keys(DEVICES).forEach(alias => {
+    devices[alias] = { id: DEVICES[alias], ...(DEVICE_META[alias] || {}) };
+  });
+  res.json({ ok: true, devices });
+});
 
 // POST /tuya/switch  body: { device: "luces_carpa"|<id crudo>, on: true|false }
 // Intenta con el código "switch" primero; si Tuya lo rechaza, reintenta con "switch_1"
