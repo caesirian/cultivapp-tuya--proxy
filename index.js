@@ -4,6 +4,7 @@ const https   = require("https");
 const admin   = require("firebase-admin");
 
 const app  = express();
+app.use(express.json());
 const PORT = process.env.PORT || 3000;
 
 const SNAPSHOT_SECRET = process.env.SNAPSHOT_SECRET || "";
@@ -58,7 +59,8 @@ const DEVICES_CULTIVO = ["sensor_carpa", "luces_carpa", "turbinas_carpa", "senso
 
 app.use((req, res, next) => {
   res.set("Access-Control-Allow-Origin", "*");
-  res.set("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.set("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(204).end();
   next();
 });
@@ -82,13 +84,36 @@ function httpsGet(path, headers) {
 
 // Firma según doc oficial Tuya v1.0
 // string to sign = client_id + t + nonce + url (GET sin body)
-function buildSign(clientId, secret, t, nonce, accessToken, method, path) {
-  const contentHash = crypto.createHash("sha256").update("").digest("hex");
-  const headers     = "";
-  const url         = path;
-  const strToSign   = [method, contentHash, headers, url].join("\n");
-  const signStr     = clientId + (accessToken || "") + t + nonce + strToSign;
+function buildSign(clientId, secret, t, nonce, accessToken, method, path, body) {
+  const bodyStr      = body ? JSON.stringify(body) : "";
+  const contentHash  = crypto.createHash("sha256").update(bodyStr).digest("hex");
+  const headers      = "";
+  const url          = path;
+  const strToSign    = [method, contentHash, headers, url].join("\n");
+  const signStr      = clientId + (accessToken || "") + t + nonce + strToSign;
   return crypto.createHmac("sha256", secret).update(signStr).digest("hex").toUpperCase();
+}
+
+function httpsPost(path, headers, body) {
+  return new Promise((resolve, reject) => {
+    const bodyStr = JSON.stringify(body);
+    const options = {
+      hostname: BASE_HOST, path, method: "POST",
+      headers: { ...headers, "Content-Type": "application/json", "Content-Length": Buffer.byteLength(bodyStr) },
+    };
+    const req = https.request(options, (res) => {
+      let data = "";
+      res.on("data", chunk => data += chunk);
+      res.on("end", () => {
+        try { resolve(JSON.parse(data)); }
+        catch(e) { reject(new Error("Parse error: " + data.slice(0,200))); }
+      });
+    });
+    req.on("error", reject);
+    req.setTimeout(10000, () => { req.destroy(); reject(new Error("Timeout")); });
+    req.write(bodyStr);
+    req.end();
+  });
 }
 
 // Mapeo de códigos Tuya -> nombres amigables.
@@ -383,6 +408,40 @@ app.get("/tuya/cultivo/resumen", async (req, res) => {
 
 // Lista de dispositivos conocidos (nombre corto -> id)
 app.get("/tuya/devices", (req, res) => res.json({ ok: true, devices: DEVICES }));
+
+// POST /tuya/switch  body: { device: "luces_carpa"|<id crudo>, on: true|false }
+// Intenta con el código "switch" primero; si Tuya lo rechaza, reintenta con "switch_1"
+// (distintos modelos de enchufe/interruptor usan uno u otro).
+app.post("/tuya/switch", async (req, res) => {
+  const { device, on } = req.body || {};
+  if (!device || typeof on !== "boolean") {
+    return res.status(400).json({ error: "Body inválido, se espera { device, on: true|false }" });
+  }
+  const deviceId = DEVICES[device] || device;
+  const path = `/v1.0/devices/${deviceId}/commands`;
+
+  async function intentar(codigo) {
+    const accessToken = await getToken();
+    const body = { commands: [{ code: codigo, value: on }] };
+    const t = Date.now().toString();
+    const n = crypto.randomBytes(8).toString("hex");
+    const sig = buildSign(CLIENT_ID, SECRET, t, n, accessToken, "POST", path, body);
+    return httpsPost(path, {
+      "client_id": CLIENT_ID, "access_token": accessToken,
+      "sign": sig, "t": t, "sign_method": "HMAC-SHA256", "nonce": n,
+    }, body);
+  }
+
+  try {
+    let resultado = await intentar("switch");
+    if (!resultado.success) resultado = await intentar("switch_1");
+    if (!resultado.success) return res.status(500).json({ error: "Switch error", detail: resultado });
+    res.json({ ok: true, device, on, detail: resultado });
+  } catch (err) {
+    console.error("Error switch:", err.message);
+    res.status(500).json({ error: err.message, detail: err.detail });
+  }
+});
 
 // Guarda una lectura de los sensores de cultivo en Firestore.
 // Estructura: lecturasSensores/{alias}/lecturas/{timestamp}  -> { ts, sensores }
