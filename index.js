@@ -425,6 +425,63 @@ app.get("/tuya/cultivo/resumen", async (req, res) => {
 });
 
 // Lista de dispositivos conocidos (nombre corto -> id)
+// Calcula cuántas horas estuvo ENCENDIDO un switch durante un día calendario
+// puntual (huso Argentina), integrando los eventos de encendido/apagado reales
+// de Tuya (más preciso que asumir que nunca cambió entre lecturas periódicas).
+async function calcularFotoperiodo(deviceId, fechaISO, accessToken) {
+  const inicioDia = new Date(`${fechaISO}T00:00:00-03:00`).getTime();
+  const finDia     = Math.min(inicioDia + 24 * 60 * 60 * 1000, Date.now());
+  const margen     = 6 * 60 * 60 * 1000; // 6h de margen hacia atrás, para saber el estado vigente antes de medianoche
+
+  const logs = await getRawHistory(deviceId, "switch,switch_1", inicioDia - margen, finDia, accessToken);
+  const eventos = logs
+    .map(l => ({ t: l.event_time, on: l.value === true || l.value === "true" }))
+    .sort((a, b) => a.t - b.t);
+
+  // Estado vigente justo antes del inicio del día (última lectura anterior a medianoche)
+  let estadoInicial = false;
+  for (const e of eventos) { if (e.t <= inicioDia) estadoInicial = e.on; else break; }
+
+  let msEncendido = 0, tPrev = inicioDia, estadoPrev = estadoInicial;
+  for (const e of eventos) {
+    if (e.t <= inicioDia) continue;
+    const tActual = Math.min(e.t, finDia);
+    if (estadoPrev) msEncendido += tActual - tPrev;
+    tPrev = tActual; estadoPrev = e.on;
+    if (tPrev >= finDia) break;
+  }
+  if (tPrev < finDia && estadoPrev) msEncendido += finDia - tPrev;
+
+  return {
+    horasEncendido: +(msEncendido / 3600000).toFixed(2),
+    horasVentana: +((finDia - inicioDia) / 3600000).toFixed(2),
+    diaCompleto: finDia >= inicioDia + 24 * 60 * 60 * 1000,
+    eventos: eventos.length,
+  };
+}
+
+// GET /tuya/fotoperiodo?device=luces_carpa&fecha=YYYY-MM-DD (default: ayer, Argentina)
+app.get("/tuya/fotoperiodo", async (req, res) => {
+  const alias    = req.query.device;
+  const deviceId = DEVICES[alias] || alias;
+  if (!deviceId) return res.status(400).json({ error: "Falta 'device'" });
+
+  let fecha = req.query.fecha;
+  if (!fecha) {
+    const ayer = new Date(Date.now() - 24 * 60 * 60 * 1000 - 3 * 60 * 60 * 1000);
+    fecha = ayer.toISOString().slice(0, 10);
+  }
+
+  try {
+    const accessToken = await getToken();
+    const resultado = await calcularFotoperiodo(deviceId, fecha, accessToken);
+    res.json({ ok: true, device: alias, deviceId, fecha, ...resultado });
+  } catch (err) {
+    console.error("Error fotoperiodo:", err.message);
+    res.status(500).json({ error: err.message, detail: err.detail });
+  }
+});
+
 app.get("/tuya/devices", (req, res) => {
   const devices = {};
   Object.keys(DEVICES).forEach(alias => {
