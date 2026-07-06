@@ -431,7 +431,7 @@ app.get("/tuya/cultivo/resumen", async (req, res) => {
 async function calcularFotoperiodo(deviceId, fechaISO, accessToken) {
   const inicioDia = new Date(`${fechaISO}T00:00:00-03:00`).getTime();
   const finDia     = Math.min(inicioDia + 24 * 60 * 60 * 1000, Date.now());
-  const margen     = 6 * 60 * 60 * 1000; // 6h de margen hacia atrás, para saber el estado vigente antes de medianoche
+  const margen     = 24 * 60 * 60 * 1000; // 24h de margen: cubre cualquier tramo encendido/apagado de hasta un dia completo
 
   const logs = await getRawHistory(deviceId, "switch,switch_1", inicioDia - margen, finDia, accessToken);
   const eventos = logs
@@ -461,6 +461,41 @@ async function calcularFotoperiodo(deviceId, fechaISO, accessToken) {
 }
 
 // GET /tuya/fotoperiodo?device=luces_carpa&fecha=YYYY-MM-DD (default: ayer, Argentina)
+// Cuánto lleva encendida la luz AHORA MISMO (desde la última vez que pasó de
+// apagada a encendida), comparado en tiempo real contra el objetivo del día —
+// más intuitivo que esperar a que termine el día para saber si algo anda mal.
+async function calcularSesionActual(deviceId, accessToken) {
+  const ahora   = Date.now();
+  const ventana = 30 * 60 * 60 * 1000; // 30h: cubre cualquier tramo on u off de hasta ~1 dia
+  const [estado, logs] = await Promise.all([
+    getDeviceStatus(deviceId, accessToken),
+    getRawHistory(deviceId, "switch,switch_1", ahora - ventana, ahora, accessToken),
+  ]);
+
+  const eventos = logs
+    .map(l => ({ t: l.event_time, on: l.value === true || l.value === "true" }))
+    .sort((a, b) => a.t - b.t);
+
+  const encendidoAhora = !!(estado.sensores && estado.sensores.encendido);
+  if (!encendidoAhora) {
+    return { online: estado.online, encendido: false, horasSesion: 0 };
+  }
+
+  // Retrocedemos buscando el inicio de la racha actual de "encendida"
+  let inicioSesion = null;
+  for (let i = eventos.length - 1; i >= 0; i--) {
+    if (eventos[i].on) inicioSesion = eventos[i].t;
+    else break;
+  }
+  if (inicioSesion === null) inicioSesion = ahora - ventana; // no vimos el inicio real, usamos el borde de la ventana
+
+  return {
+    online: estado.online,
+    encendido: true,
+    horasSesion: +((ahora - inicioSesion) / 3600000).toFixed(2),
+  };
+}
+
 app.get("/tuya/fotoperiodo", async (req, res) => {
   const alias    = req.query.device;
   const deviceId = DEVICES[alias] || alias;
@@ -474,8 +509,11 @@ app.get("/tuya/fotoperiodo", async (req, res) => {
 
   try {
     const accessToken = await getToken();
-    const resultado = await calcularFotoperiodo(deviceId, fecha, accessToken);
-    res.json({ ok: true, device: alias, deviceId, fecha, ...resultado });
+    const [resultado, sesionActual] = await Promise.all([
+      calcularFotoperiodo(deviceId, fecha, accessToken),
+      calcularSesionActual(deviceId, accessToken),
+    ]);
+    res.json({ ok: true, device: alias, deviceId, fecha, ...resultado, sesionActual });
   } catch (err) {
     console.error("Error fotoperiodo:", err.message);
     res.status(500).json({ error: err.message, detail: err.detail });
