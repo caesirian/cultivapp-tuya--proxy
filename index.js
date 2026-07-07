@@ -567,6 +567,92 @@ app.post("/tuya/switch", async (req, res) => {
 
 // Guarda una lectura de los sensores de cultivo en Firestore.
 // Estructura: lecturasSensores/{alias}/lecturas/{timestamp}  -> { ts, sensores }
+// Métricas numéricas que tiene sentido agregar (min/max/avg). Los switches
+// (encendido true/false) no se promedian, quedan solo en el crudo.
+const METRICAS_ROLLUP = ["tempAmb", "humedad"];
+
+// Clave de hora/día en huso Argentina (UTC-3), lexicográficamente ordenable
+// para poder hacer range-queries directo sobre el ID del documento.
+function claveHora(ts) { return new Date(ts - 3*60*60*1000).toISOString().slice(0,13); } // "YYYY-MM-DDTHH"
+function claveDia(ts)  { return new Date(ts - 3*60*60*1000).toISOString().slice(0,10); } // "YYYY-MM-DD"
+
+// Suma la nueva lectura al rollup existente (min/max/sum/count) de forma atómica.
+async function actualizarRollup(refDoc, ts, sensores) {
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(refDoc);
+    const data = snap.exists ? snap.data() : {};
+    data.desde = Math.min(data.desde ?? ts, ts);
+    data.hasta = Math.max(data.hasta ?? ts, ts);
+    METRICAS_ROLLUP.forEach(m => {
+      const v = sensores[m];
+      if (typeof v !== "number") return;
+      const actual = data[m] || { min: v, max: v, sum: 0, count: 0 };
+      actual.min   = Math.min(actual.min, v);
+      actual.max   = Math.max(actual.max, v);
+      actual.sum   = (actual.sum || 0) + v;
+      actual.count = (actual.count || 0) + 1;
+      data[m] = actual;
+    });
+    tx.set(refDoc, data);
+  });
+}
+
+async function actualizarRollups(nombre, ts, sensores) {
+  const base = db.collection("lecturasSensores").doc(nombre);
+  await Promise.all([
+    actualizarRollup(base.collection("rollupHoraria").doc(claveHora(ts)), ts, sensores),
+    actualizarRollup(base.collection("rollupDiaria").doc(claveDia(ts)), ts, sensores),
+  ]);
+}
+
+// Claves de bucket en huso Argentina (UTC-3), sin depender del huso del server.
+function claveHoraART(ts)  { return new Date(ts - 3*60*60*1000).toISOString().slice(0,13); } // "YYYY-MM-DDTHH"
+function claveDiaART(ts)   { return new Date(ts - 3*60*60*1000).toISOString().slice(0,10); }  // "YYYY-MM-DD"
+
+// Actualiza (o crea) los buckets de rollup horario y diario con los campos
+// numéricos de una lectura, usando transacciones para que sea seguro acumular
+// min/max/sum/count aunque se dispare más de una vez casi al mismo tiempo.
+async function actualizarRollup(alias, ts, sensores) {
+  const campos = Object.entries(sensores).filter(([k, v]) => typeof v === "number" && !k.startsWith("_"));
+  if (!campos.length) return;
+
+  const niveles = [
+    { coleccion: "rollupHoraria", clave: claveHoraART(ts) },
+    { coleccion: "rollupDiaria",  clave: claveDiaART(ts) },
+  ];
+
+  for (const { coleccion, clave } of niveles) {
+    const ref = db.collection("lecturasSensores").doc(alias).collection(coleccion).doc(clave);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const data = snap.exists ? snap.data() : { clave, metrics: {} };
+      for (const [campo, valor] of campos) {
+        const m = data.metrics[campo] || { min: valor, max: valor, sum: 0, count: 0 };
+        m.min = Math.min(m.min, valor);
+        m.max = Math.max(m.max, valor);
+        m.sum = m.sum + valor;
+        m.count = m.count + 1;
+        data.metrics[campo] = m;
+      }
+      tx.set(ref, data);
+    });
+  }
+}
+
+// Borra lecturas crudas de más de N días (el detalle minuto a minuto de hace
+// semanas no aporta nada que el rollup horario/diario no dé igual, y así no
+// se acumula basura sin límite en la colección de detalle fino).
+async function podarLecturasViejas(alias, diasRetencion = 14) {
+  const corte = String(Date.now() - diasRetencion * 24 * 60 * 60 * 1000);
+  const ref = db.collection("lecturasSensores").doc(alias).collection("lecturas");
+  const snap = await ref.orderBy(admin.firestore.FieldPath.documentId()).endBefore(corte).limit(200).get();
+  if (snap.empty) return 0;
+  const batch = db.batch();
+  snap.docs.forEach(d => batch.delete(d.ref));
+  await batch.commit();
+  return snap.size;
+}
+
 async function snapshotYGuardar() {
   if (!db) throw new Error("Firestore no está configurado (falta FIREBASE_SERVICE_ACCOUNT_B64)");
   const accessToken = await getToken();
@@ -579,7 +665,9 @@ async function snapshotYGuardar() {
       await db.collection("lecturasSensores").doc(nombre)
         .collection("lecturas").doc(String(ts))
         .set({ ts, online, sensores });
-      return [nombre, { ok: true }];
+      await actualizarRollup(nombre, ts, sensores);
+      const podadas = await podarLecturasViejas(nombre).catch(() => 0);
+      return [nombre, { ok: true, podadas }];
     } catch (err) {
       // Dispositivo offline u otro error puntual: no rompe el snapshot de los demás
       return [nombre, { ok: false, error: err.message }];
@@ -605,5 +693,48 @@ app.get("/tuya/snapshot", async (req, res) => {
 });
 
 app.get("/", (req, res) => res.json({ status: "CultivApp Tuya Proxy OK", ts: Date.now() }));
+
+// GET /tuya/rollup?device=sensor_carpa&nivel=hora|dia&desde=2026-06-01&hasta=2026-07-01
+// Lee el histórico propio (sin límite de 7 días) agregado por hora o por día.
+app.get("/tuya/rollup", async (req, res) => {
+  if (!db) return res.status(500).json({ error: "Firestore no configurado" });
+  const alias = req.query.device;
+  if (!alias) return res.status(400).json({ error: "Falta 'device'" });
+  const nivel = req.query.nivel === "dia" ? "rollupDiaria" : "rollupHoraria";
+
+  try {
+    let q = db.collection("lecturasSensores").doc(alias).collection(nivel)
+      .orderBy(admin.firestore.FieldPath.documentId());
+    if (req.query.desde) q = q.startAt(req.query.desde);
+    if (req.query.hasta) q = q.endAt(req.query.hasta);
+    const snap = await q.get();
+    const puntos = snap.docs.map(d => d.data());
+    res.json({ ok: true, device: alias, nivel, puntos });
+  } catch (err) {
+    console.error("Error rollup:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /tuya/lecturas?device=sensor_carpa&desde=<ts ms>&hasta=<ts ms>
+// Lee el detalle crudo propio (retenido ~14 días, ver podarLecturasViejas).
+app.get("/tuya/lecturas", async (req, res) => {
+  if (!db) return res.status(500).json({ error: "Firestore no configurado" });
+  const alias = req.query.device;
+  if (!alias) return res.status(400).json({ error: "Falta 'device'" });
+
+  try {
+    let q = db.collection("lecturasSensores").doc(alias).collection("lecturas")
+      .orderBy(admin.firestore.FieldPath.documentId());
+    if (req.query.desde) q = q.startAt(String(req.query.desde));
+    if (req.query.hasta) q = q.endAt(String(req.query.hasta));
+    const snap = await q.get();
+    const puntos = snap.docs.map(d => d.data());
+    res.json({ ok: true, device: alias, puntos });
+  } catch (err) {
+    console.error("Error lecturas:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 app.listen(PORT, () => console.log(`Puerto ${PORT}`));
