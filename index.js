@@ -298,6 +298,18 @@ function scaleValue(code, rawValue) {
   return n;
 }
 
+// Si la serie tiene muchísimos puntos (sensor que reporta muy seguido en un
+// rango largo), la recorta de forma pareja para no mandarle al gráfico miles
+// de puntos innecesarios. min/max/avg/count se calculan ANTES de esto, sobre
+// los datos completos, así las estadísticas no pierden precisión.
+function downsamplear(puntos, maxPuntos = 400) {
+  if (puntos.length <= maxPuntos) return puntos;
+  const paso = puntos.length / maxPuntos;
+  const resultado = [];
+  for (let i = 0; i < maxPuntos; i++) resultado.push(puntos[Math.floor(i * paso)]);
+  return resultado;
+}
+
 // Arma serie de puntos {t, v} y estadísticas min/max/avg/count por código
 function buildStats(logs) {
   const porCodigo = {};
@@ -319,7 +331,7 @@ function buildStats(logs) {
       avg: Number((valores.reduce((a, b) => a + b, 0) / valores.length).toFixed(2)),
       count: valores.length,
       ultimo: valores[valores.length - 1],
-      serie: puntos,
+      serie: downsamplear(puntos),
     };
   });
   return resultado;
@@ -367,8 +379,8 @@ app.get("/tuya/history/resumen", async (req, res) => {
   try {
     const accessToken = await getToken();
     const [logs24h, logs7d] = await Promise.all([
-      getRawHistory(deviceId, codes, now - 24 * 60 * 60 * 1000, now, accessToken),
-      getRawHistory(deviceId, codes, now - 7 * 24 * 60 * 60 * 1000, now, accessToken),
+      getRawHistory(deviceId, codes, now - 24 * 60 * 60 * 1000, now, accessToken, 15),
+      getRawHistory(deviceId, codes, now - 7 * 24 * 60 * 60 * 1000, now, accessToken, 45),
     ]);
     const { sensores: actual, online } = await getDeviceStatus(deviceId, accessToken);
     res.json({
