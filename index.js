@@ -43,6 +43,8 @@ const DEFAULT_DEVICES = {
   // Estructura 3x1
   sensor_3x1:       "eb8fc54c62a0049352pgax",
   luces_3x1:        "80210308a4cf12ac315b",
+  // Estructura 2x1
+  luces_2x1:        "eb4314e2ba9d6459046wao",
   // Dispositivos de la casa (no asociados a un lugar de cultivo)
   smart_plug:         "3522204898f4abba1fd6",
   aire_acondicionado: "eb97eb20b3f13e4819ciem",
@@ -55,7 +57,7 @@ if (process.env.TUYA_DEVICES_JSON) {
 }
 
 // Dispositivos que son "lugares de cultivo" (para /tuya/snapshot y /tuya/history/resumen por defecto)
-const DEVICES_CULTIVO = ["sensor_carpa", "luces_carpa", "turbinas_carpa", "sensor_3x1", "luces_3x1"];
+const DEVICES_CULTIVO = ["sensor_carpa", "luces_carpa", "turbinas_carpa", "sensor_3x1", "luces_3x1", "luces_2x1"];
 
 // Metadata para exponer un catálogo completo en /tuya/devices (fuente única de verdad,
 // el frontend la consume en vez de tener su propia copia hardcodeada de esto).
@@ -65,6 +67,7 @@ const DEVICE_META = {
   turbinas_carpa: { tipo: "switch", nombre: "Turbinas Carpa", lugar: "Carpa" },
   sensor_3x1:     { tipo: "sensor", nombre: "Sensor 3x1",     lugar: "Estructura 3x1" },
   luces_3x1:      { tipo: "switch", nombre: "Luces 3x1",      lugar: "Estructura 3x1" },
+  luces_2x1:      { tipo: "switch", nombre: "Luces 2x1",      lugar: "Estructura 2x1" },
 };
 
 app.use((req, res, next) => {
