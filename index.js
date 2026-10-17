@@ -38,6 +38,7 @@ const DEVICE_ID = process.env.TUYA_DEVICE_ID || "ebefb9fc12b7940a71l8gp";
 const DEFAULT_DEVICES = {
   // Carpa
   sensor_carpa:     "ebefb9fc12b7940a71l8gp",
+  // luces_carpa: switch quemado (oct 2026), ya no se usa. Se conserva el ID para poder consultar su histórico.
   luces_carpa:      "ebb60fa54c54559c63ysur",
   turbinas_carpa:   "3522204898f4abba2357",
   // Estructura 3x1
@@ -57,13 +58,12 @@ if (process.env.TUYA_DEVICES_JSON) {
 }
 
 // Dispositivos que son "lugares de cultivo" (para /tuya/snapshot y /tuya/history/resumen por defecto)
-const DEVICES_CULTIVO = ["sensor_carpa", "luces_carpa", "turbinas_carpa", "sensor_3x1", "luces_3x1", "luces_2x1"];
+const DEVICES_CULTIVO = ["sensor_carpa", "turbinas_carpa", "sensor_3x1", "luces_3x1", "luces_2x1"];
 
 // Metadata para exponer un catálogo completo en /tuya/devices (fuente única de verdad,
 // el frontend la consume en vez de tener su propia copia hardcodeada de esto).
 const DEVICE_META = {
   sensor_carpa:   { tipo: "sensor", nombre: "Sensor Carpa",   lugar: "Carpa" },
-  luces_carpa:    { tipo: "switch", nombre: "Luces Carpa",    lugar: "Carpa" },
   turbinas_carpa: { tipo: "switch", nombre: "Turbinas Carpa", lugar: "Carpa" },
   sensor_3x1:     { tipo: "sensor", nombre: "Sensor 3x1",     lugar: "Estructura 3x1" },
   luces_3x1:      { tipo: "switch", nombre: "Luces 3x1",      lugar: "Estructura 3x1" },
