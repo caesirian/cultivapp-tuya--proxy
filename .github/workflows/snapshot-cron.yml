@@ -5,10 +5,37 @@ on:
     - cron: "*/15 * * * *"
   workflow_dispatch: {}
 
+permissions:
+  actions: write
+  contents: read
+
 jobs:
   snapshot:
     runs-on: ubuntu-latest
     steps:
       - name: Llamar endpoint de snapshot
+        env:
+          SNAPSHOT_SECRET: ${{ secrets.SNAPSHOT_SECRET }}
         run: |
-          curl -sS -f "https://cultivapp-tuya-proxy.onrender.com/tuya/snapshot?key=${{ secrets.SNAPSHOT_SECRET }}"
+          if [ -z "$SNAPSHOT_SECRET" ]; then
+            echo "::error title=Falta secret::No existe el secret SNAPSHOT_SECRET en GitHub (Settings > Secrets and variables > Actions)"
+            exit 1
+          fi
+          # Render free duerme el servicio: el primer pedido puede tardar en despertarlo.
+          code=$(curl -sS --max-time 120 --retry 3 --retry-delay 20 -o resp.txt -w "%{http_code}" \
+            "https://cultivapp-tuya-proxy.onrender.com/tuya/snapshot?key=${SNAPSHOT_SECRET}" || echo "000")
+          echo "HTTP $code"
+          head -c 600 resp.txt || true
+          echo
+          if [ "$code" != "200" ]; then
+            echo "::error title=Snapshot fallo::HTTP $code - $(head -c 300 resp.txt 2>/dev/null | tr '\n' ' ')"
+            exit 1
+          fi
+
+      # GitHub apaga los workflows programados tras 60 días sin actividad en el repo.
+      # Re-habilitarlo en cada corrida reinicia ese contador.
+      - name: Mantener el workflow activo
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/snapshot-cron.yml/enable" || true
